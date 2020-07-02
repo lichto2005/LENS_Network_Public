@@ -1,0 +1,5 @@
+*.crt
+*.key
+*.pem
+aws-iot-device-sdk-python
+*.pyc
