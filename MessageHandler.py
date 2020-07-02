@@ -28,10 +28,10 @@ class CloudHandler(Thread):
 
         def handle_callback(client, userdata, message):
             logger.debug('cloud handler received message')
-            logger.debug(message.payload)
+            # logger.debug(message.payload)
             msg = Messages.AMessage.deserialize(message.payload)
             if msg:
-                msg.handle(path='path')
+                msg.handle(path='/tmp/')
             else:
                 logger.error('unparsable message')
 

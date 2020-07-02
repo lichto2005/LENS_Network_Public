@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 import yaml
+import psutil
 import logging
 import datetime
 import requests
@@ -10,7 +11,7 @@ import requests
 import IOTWrapper
 
 logger = logging.getLogger(__file__)
-
+logger.setLevel(logging.DEBUG)
 
 # TODO: this is currently a dummy...
 def fetch_metadata():
@@ -49,8 +50,7 @@ class AMessage(object):
                 # logger.debug('parsed message as {}'.format(clz.__name__))
                 return msg
             except BaseException as e:
-                # pass
-                logger.debug('e: {}'.format(e))
+                pass
                 # logger.debug('failed trying to parse as {}'.format(clz.__name__))
 
         return None
@@ -88,7 +88,7 @@ class ModelResponse(AMessage):
         uid = self.msg_dict.get('uid', None)
         if buf and save_fn and uid and path:
             logger.debug('saving clip {}'.format(uid))
-            save_fn('{}/{}'.format(path, uid), buf)
+            save_fn('{}/{}.mov'.format(path, uid), buf)
 
 
 class ProbabilityMessage(AMessage):
@@ -100,8 +100,9 @@ class ProbabilityMessage(AMessage):
         3: 'no action'
     }
 
-    last_seen = None
+    last_seen = 0
     last_type = None
+    debounce = 0
 
     def __init__(self, predictions):
         AMessage.__init__(self)
@@ -124,7 +125,7 @@ class ProbabilityMessage(AMessage):
     def handle(self, *args, **kwargs):
         # figure out the highest prediction
         preds = [float(x) for x in self.msg_dict['probabilities']]
-        logger.info('received predictions: {}'.format(preds))
+        # logger.info('received predictions: {}'.format(preds))
         max_idx = 0
         max_pred = 0.0
         for i, p in enumerate(preds):
@@ -137,26 +138,35 @@ class ProbabilityMessage(AMessage):
         # make sure it is a valid one
         crime_type = self.idx_to_crime_dict.get(max_idx, 'no action')
         crime_time = float(self.msg_dict.get('time', 0))
+        if max_pred < 0.65:
+            crime_type = 'no action'
+
         if crime_type == 'no action':
-            logger.error('either preds are bad or we received a "no action" msg')
+            # logger.error('either preds are bad or we received a "no action" msg')
+            ProbabilityMessage.debounce = 0
         elif not crime_time:
             logger.error('pred message has no time')
+        elif crime_type != ProbabilityMessage.last_type:
+            ProbabilityMessage.last_type = crime_type
+            ProbabilityMessage.debounce = 0
+        elif ProbabilityMessage.debounce < 10:
+            ProbabilityMessage.debounce += 1
         # ignore a prediction if its the same prediction < 1 second apart
-        elif (crime_type == ProbabilityMessage.last_type and
-                crime_time - ProbabilityMessage.last_seen < 1):
-            logger.info('saw this same crime < 1sec ago, ignoring')
+        elif crime_time - ProbabilityMessage.last_seen < 1:
+            logger.info('detected debounced crime, ignoring')
             ProbabilityMessage.last_seen = crime_time
         # send a detect
         else:
-            logging.info('publishing new crime to IOT')
             ProbabilityMessage.last_seen = crime_time
             ProbabilityMessage.last_type = crime_type
-            msg = DetectMessage(crime_time, crime_type, 'Boston', max_pred)
+            msg = DetectMessage(crime_time, crime_type,
+                    'Northeastern University', max_pred)
+            uid = msg.msg_dict['metadata']['uid']
+            logging.info('publishing new crime to IOT: {}'.format(uid))
             IOTWrapper.publish('dev/detect', msg.serialize())
 
-            uid = msg.msg_dict['metadata']['uid']
 
-        logger.info('sending response to model')
+        # logger.info('sending response to model')
         conn = kwargs.get('resp_sock', None)
         if conn:
             conn.send(ModelResponse(uid).serialize())
@@ -229,6 +239,26 @@ class FileRequest(AMessage):
 
         raise RuntimeError('bad parse')
 
+    @staticmethod
+    def _is_still_writing(path):
+        for proc in psutil.process_iter():
+            try:
+                for item in proc.open_files():
+                    if path == item.path:
+                        return True
+            except Exception:
+                pass
+
+        return False
+
+    @staticmethod
+    def _is_size_same(path):
+        sz = os.stat(path).st_size
+        time.sleep(0.05) # tune
+        sz2 = os.stat(path).st_size
+
+        return sz == sz2
+
     def handle(self, *args, **kwargs):
         filename = self.msg_dict.get("filename", None)
         url = self.msg_dict.get("s3_url", None)
@@ -242,6 +272,20 @@ class FileRequest(AMessage):
             filename = os.path.join(path, filename)
 
         if os.path.exists(filename):
+            
+            # best option, wait until done writing
+            #while FileRequest._is_still_writing(filename):
+            #    logger.debug('sleeping while file is writing')
+            #    time.sleep(0.1)
+
+            # second best, check the size quickly and see if it changes
+            #while not FileRequest._is_size_same(path):
+            #    logger.debug('sleeping while file is writing')
+            #    time.sleep(0.1)
+
+            # this is just in case we really can't fix it...
+            time.sleep(2)
+
             with open(filename, 'rb') as f:
                 files = {'file': (filename, f)}
                 resp = requests.post(url, data=headers, files=files)

@@ -32,11 +32,11 @@ def init_iot():
         return
 
     logger.info('starting IOT client')
-    iot_client = Client('CLIENT_NAME')
+    iot_client = Client('jetson-iot')
     
     # TODO: don't hard code this
-    iot_client.configureEndpoint('ENDPOINT', 8883)
-    iot_client.configureCredentials("Root CA", "private.pem.key", "certificate.pem.crt")
+    iot_client.configureEndpoint('AWS_ENDPOINT', 8883)
+    iot_client.configureCredentials("ROOT CA", "PRIVATE KEY", "CERT")
 
     ca, key, cert = fetch_creds('.')
     logger.info('CA={}'.format(ca))
